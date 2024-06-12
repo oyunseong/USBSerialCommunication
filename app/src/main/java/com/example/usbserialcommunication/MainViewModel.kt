@@ -10,7 +10,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.myapplication.extensions.log
+import com.example.usbserialcommunication.extensions.log
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -19,6 +19,7 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class ReceiveData(
@@ -49,7 +50,6 @@ class MainViewModel : ViewModel() {
     val uiState = _uiState.asStateFlow()
 
     private var usbPermission: UsbPermission = UsbPermission.Unknown
-    private var usbSerialPort: UsbSerialPort? = null
     private var usbIoManager: SerialInputOutputManager? = null
 
     init {
@@ -78,17 +78,24 @@ class MainViewModel : ViewModel() {
 
     fun connect(
         context: Context,
-        item: Item
+        item: Item,
+        baudRate: Int = 19200,
+        dataBits: Int = 8,
+        stopBits: Int = 1,
+        parity: Int = UsbSerialPort.PARITY_NONE
     ) {
-        val baudRate = 19200
         "connect call".log()
         viewModelScope.launch {
             val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-            usbSerialPort = item.driver.ports[item.port]
-            val usbConnection: UsbDeviceConnection? = usbManager.openDevice(item.device)
-            if (usbConnection == null && usbPermission == UsbPermission.Unknown && !usbManager.hasPermission(
-                    item.device
+            _uiState.emit(
+                uiState.value.copy(
+                    usbSerialPort = item.driver.ports[item.port]
                 )
+            )
+            val usbConnection: UsbDeviceConnection? = usbManager.openDevice(item.device)
+            if (usbConnection == null
+                && usbPermission == UsbPermission.Unknown
+                && !usbManager.hasPermission(item.device)
             ) {
                 usbPermission = UsbPermission.Requested
                 val flags =
@@ -100,13 +107,12 @@ class MainViewModel : ViewModel() {
                 usbManager.requestPermission(item.device, usbPermissionIntent)
                 return@launch
             }
-            if (usbConnection == null) {
-                return@launch
-            }
+
             try {
-                usbSerialPort!!.open(usbConnection)
+                val usbSerialPort = uiState.value.usbSerialPort ?: return@launch
+                usbSerialPort.open(usbConnection)
                 try {
-                    usbSerialPort!!.setParameters(baudRate, 8, 1, UsbSerialPort.PARITY_NONE)
+                    usbSerialPort.setParameters(baudRate, dataBits, stopBits, parity)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -126,19 +132,21 @@ class MainViewModel : ViewModel() {
 
                             override fun onRunError(e: java.lang.Exception?) {
                                 viewModelScope.launch {
-                                    disconnect()
+                                    uiState.value.usbSerialPort?.let {
+                                        disconnect(usbSerialPort = it)
+                                    }
                                 }
                             }
                         })
-                    usbIoManager!!.start()
+                    usbIoManager?.apply {
+                        start()
+                    }
                 }
-                _uiState.emit(
-                    uiState.value.copy(
-                        isConnect = true
-                    )
-                )
+                updateUiState(action = { copy(isConnect = true) })
             } catch (e: Exception) {
-                disconnect()
+                uiState.value.usbSerialPort?.let {
+                    disconnect(usbSerialPort = it)
+                }
             }
         }
     }
@@ -149,7 +157,7 @@ class MainViewModel : ViewModel() {
             val message = ReceiveData(
                 time = System.currentTimeMillis(),
                 size = data.size,
-                data = HexDump.dumpHexString(data) ?: "",
+                data = HexDump.dumpHexString(data) ?: "known data",
             )
 
             _uiState.emit(
@@ -160,19 +168,26 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun disconnect() {
-//        controlLines.stop();
+    fun disconnect(
+        usbSerialPort: UsbSerialPort
+    ) {
 //        if(usbIoManager != null) {
 //            usbIoManager.setListener(null);
 //            usbIoManager.stop();
 //        }
 //        usbIoManager = null;
         try {
-            usbSerialPort?.close();
+            usbSerialPort.close();
+            updateUiState(
+                action = {
+                    copy(
+                        isConnect = false
+                    )
+                }
+            )
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        usbSerialPort = null;
     }
 
     val items: MutableStateFlow<List<Item>> = MutableStateFlow(emptyList())
@@ -212,6 +227,10 @@ class MainViewModel : ViewModel() {
 
     private enum class UsbPermission {
         Unknown, Requested, Granted, Denied
+    }
+
+    fun updateUiState(action: MainUiState.() -> MainUiState) {
+        _uiState.update { action(it) }
     }
 
     private fun CoroutineScope.launchWithCatching(
