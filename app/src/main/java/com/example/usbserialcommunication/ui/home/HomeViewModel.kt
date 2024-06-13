@@ -1,17 +1,17 @@
-package com.example.usbserialcommunication
+package com.example.usbserialcommunication.ui.home
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.usbserialcommunication.extensions.log
-import com.hoho.android.usbserial.driver.UsbSerialDriver
+import com.example.usbserialcommunication.model.DeviceInfo
+import com.example.usbserialcommunication.model.ReceiveData
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.HexDump
@@ -22,40 +22,25 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class ReceiveData(
-    val time: Long,
-    val size: Int,
-    val data: String
-)
 
-data class Item(
-    val device: UsbDevice,
-    val driver: UsbSerialDriver,
-    val port: Int
-)
 
-data class MainUiState(
-    val deviceId: Int = 0,
-    val portNum: Int = 0,
-    val baudRate: Int = 0,
-    val withIoManager: Boolean = false,
-    val isConnect: Boolean = false,
-    val usbSerialPort: UsbSerialPort? = null,
-    val message: List<ReceiveData> = emptyList()
-)
+
+
+
 
 class MainViewModel : ViewModel() {
 
-    private val _uiState: MutableStateFlow<MainUiState> = MutableStateFlow(MainUiState())
+    private val _uiState: MutableStateFlow<HomeUiState> = MutableStateFlow(HomeUiState())
     val uiState = _uiState.asStateFlow()
 
     private var usbPermission: UsbPermission = UsbPermission.Unknown
-    private var usbIoManager: SerialInputOutputManager? = null
 
     init {
-        hasUsbPermission()
+//        hasUsbPermission()
     }
 
+    // 없어도 잘 동작함. 어떤 용도로 사용하는지 모르겠음.
+    // 왜 브로드케스트를 사용?
     private fun hasUsbPermission() {
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -78,7 +63,7 @@ class MainViewModel : ViewModel() {
 
     fun connect(
         context: Context,
-        item: Item,
+        connectDevice: DeviceInfo,
         baudRate: Int = 19200,
         dataBits: Int = 8,
         stopBits: Int = 1,
@@ -87,15 +72,11 @@ class MainViewModel : ViewModel() {
         "connect call".log()
         viewModelScope.launch {
             val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-            _uiState.emit(
-                uiState.value.copy(
-                    usbSerialPort = item.driver.ports[item.port]
-                )
-            )
-            val usbConnection: UsbDeviceConnection? = usbManager.openDevice(item.device)
+            val usbConnection: UsbDeviceConnection? = usbManager.openDevice(connectDevice.device)
+            "usbPermission : $usbPermission".log()
             if (usbConnection == null
                 && usbPermission == UsbPermission.Unknown
-                && !usbManager.hasPermission(item.device)
+                && !usbManager.hasPermission(connectDevice.device)
             ) {
                 usbPermission = UsbPermission.Requested
                 val flags =
@@ -104,49 +85,56 @@ class MainViewModel : ViewModel() {
                 intent.setPackage(context.packageName)
                 val usbPermissionIntent: PendingIntent =
                     PendingIntent.getBroadcast(context, 0, intent, flags)
-                usbManager.requestPermission(item.device, usbPermissionIntent)
+                usbManager.requestPermission(connectDevice.device, usbPermissionIntent)
                 return@launch
             }
 
             try {
-                val usbSerialPort = uiState.value.usbSerialPort ?: return@launch
+                val usbSerialPort = connectDevice.usbSerialPort
                 usbSerialPort.open(usbConnection)
                 try {
                     usbSerialPort.setParameters(baudRate, dataBits, stopBits, parity)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
-                val withIoManager = true
-                if (withIoManager) {
-                    usbIoManager = SerialInputOutputManager(
+                if (connectDevice.withIoManager) {
+                    val usbIoManager = SerialInputOutputManager(
                         usbSerialPort,
                         object : SerialInputOutputManager.Listener {
                             override fun onNewData(data: ByteArray?) {
-                                "data : $data".log()
                                 viewModelScope.launch {
+                                    "receive data from ${connectDevice.device.productName} : $data"
                                     data?.let {
                                         receiveDataFromDevice(it)
                                     }
                                 }
                             }
 
-                            override fun onRunError(e: java.lang.Exception?) {
+                            override fun onRunError(e: java.lang.Exception) {
                                 viewModelScope.launch {
-                                    uiState.value.usbSerialPort?.let {
-                                        disconnect(usbSerialPort = it)
-                                    }
+                                    e.printStackTrace()
+                                    disconnect(connectedDevice = connectDevice)
                                 }
                             }
                         })
-                    usbIoManager?.apply {
-                        start()
-                    }
+                    usbIoManager.start()
+                    updateUiState(action = {
+                        copy(
+                            deviceInfoList = deviceInfoList.map {
+                                if (connectDevice.device == it.device) {
+                                    it.copy(
+                                        isConnected = true,
+                                        usbIoManager = usbIoManager
+                                    )
+                                } else {
+                                    it
+                                }
+                            })
+                    })
                 }
-                updateUiState(action = { copy(isConnect = true) })
+
             } catch (e: Exception) {
-                uiState.value.usbSerialPort?.let {
-                    disconnect(usbSerialPort = it)
-                }
+                disconnect(connectedDevice = connectDevice)
             }
         }
     }
@@ -168,58 +156,67 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun disconnect(
-        usbSerialPort: UsbSerialPort
-    ) {
-//        if(usbIoManager != null) {
-//            usbIoManager.setListener(null);
-//            usbIoManager.stop();
-//        }
-//        usbIoManager = null;
+    fun disconnect(connectedDevice: DeviceInfo) {
         try {
-            usbSerialPort.close();
-            updateUiState(
-                action = {
-                    copy(
-                        isConnect = false
-                    )
-                }
-            )
+            val usbIoManager = connectedDevice.usbIoManager
+            if (usbIoManager != null) {
+                usbIoManager.listener = null
+                usbIoManager.stop()
+            }
+
+            connectedDevice.usbSerialPort.close()
+            updateUiState(action = {
+                copy(deviceInfoList = deviceInfoList.map {
+                    if (connectedDevice.device == it.device) {
+                        it.copy(
+                            isConnected = false,
+                            usbIoManager = null
+                        )
+                    } else {
+                        it
+                    }
+                })
+            })
+
+            "disconnect success device : ${connectedDevice.device.productName}"
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
-    val items: MutableStateFlow<List<Item>> = MutableStateFlow(emptyList())
 
-    // TODO renaming
     fun searchConnectableUSBDevice(context: Context) {
         viewModelScope.launch {
-            val connectableDevice = mutableListOf<Item>()
+            val connectableDevices = mutableListOf<DeviceInfo>()
             val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
             val usbDefaultProber = UsbSerialProber.getDefaultProber()
-//        val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(manager)
-            connectableDevice.clear()
+            connectableDevices.clear()
 
             manager.deviceList.forEach {
                 val driver = usbDefaultProber.probeDevice(it.value)
                 if (driver != null) {
                     for (port in 0 until driver.ports.size) {
-                        connectableDevice.add(
-                            Item(
+                        connectableDevices.add(
+                            DeviceInfo(
                                 device = it.value,
                                 port = port,
-                                driver = driver
+                                driver = driver,
+                                usbSerialPort = driver.ports[port]
                             )
                         )
                     }
                 }
             }
 
-            connectableDevice.forEach {
+            connectableDevices.forEach {
                 "items: $it".log()
             }
-            items.emit(connectableDevice)
+
+            updateUiState {
+                copy(
+                    deviceInfoList = connectableDevices
+                )
+            }
         }
 
     }
@@ -229,7 +226,7 @@ class MainViewModel : ViewModel() {
         Unknown, Requested, Granted, Denied
     }
 
-    fun updateUiState(action: MainUiState.() -> MainUiState) {
+    private fun updateUiState(action: HomeUiState.() -> HomeUiState) {
         _uiState.update { action(it) }
     }
 

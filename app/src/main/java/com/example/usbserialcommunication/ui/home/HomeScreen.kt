@@ -23,9 +23,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.usbserialcommunication.MainViewModel
-import com.example.usbserialcommunication.ReceiveData
 import com.example.usbserialcommunication.extensions.convertMillisToDateTime
+import com.example.usbserialcommunication.model.ReceiveData
 
 
 @Composable
@@ -34,7 +33,6 @@ fun HomeScreen(
     viewModel: MainViewModel = viewModel()
 ) {
     val context = LocalContext.current.applicationContext
-    val connectableDevice by viewModel.items.collectAsState()
     val uiState by viewModel.uiState.collectAsState()
 
     LaunchedEffect(key1 = Unit) {
@@ -48,19 +46,25 @@ fun HomeScreen(
                     item {
                         Text(text = "사용 가능한 기기 리스트")
                     }
-                    if (connectableDevice.isEmpty()) {
+                    if (uiState.deviceInfoList.isEmpty()) {
                         item {
                             Text(text = "연결 가능한 기기 없음")
                         }
                     }
-                    items(connectableDevice.size) {
+                    items(uiState.deviceInfoList.size) {
+                        val device = uiState.deviceInfoList[it]
                         Button(onClick = {
-                            viewModel.connect(
-                                context = context,
-                                item = connectableDevice[it]
-                            )
+                            if (!device.isConnected) {
+                                viewModel.connect(
+                                    context = context,
+                                    connectDevice = device
+                                )
+                            } else {
+                                viewModel.disconnect(device)
+                            }
+
                         }) {
-                            Text("${connectableDevice[it].device.productName} connect : ${uiState.isConnect}")
+                            Text("${device.device.productName} connect : ${device.isConnected}")
                             Spacer(modifier = Modifier.height(8.dp))
                         }
                     }
@@ -74,18 +78,6 @@ fun HomeScreen(
             )
             StateMessage(uiState.message)
         }
-        Button(
-            modifier = Modifier.align(Alignment.TopEnd),
-            onClick = {
-                uiState.usbSerialPort?.let {
-                    viewModel.disconnect(
-                        usbSerialPort = it
-                    )
-                }
-            }) {
-            Text(text = "연결 해제")
-        }
-
     }
 
 }
