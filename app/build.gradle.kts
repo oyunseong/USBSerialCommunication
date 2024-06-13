@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -67,4 +68,9 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
     implementation("com.github.mik3y:usb-serial-for-android:3.7.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.1")
+
+    // Room
+    implementation(libs.androidx.room.runtime)
+    annotationProcessor(libs.androidx.room.compiler)
+    ksp(libs.androidx.room)
 }
